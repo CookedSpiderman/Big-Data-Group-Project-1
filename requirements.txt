@@ -1,0 +1,4 @@
+pyspark==3.5.3
+confluent-kafka>=2.3
+websockets>=12
+spacy>=3.7,<3.9
