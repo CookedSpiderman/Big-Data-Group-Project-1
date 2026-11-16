@@ -26,5 +26,55 @@ Suggested shape:
 """
 
 
+"""Part 2.3(c): live topic classification alongside the entity-count stream.
+
+The Part 1 application supplies a SparkSession and an already-parsed streaming
+DataFrame from Kafka topic1. The returned query runs independently alongside
+the Part 1 entity query, using its own checkpoint directory.
+"""
+
+from pyspark.ml import PipelineModel
+from pyspark.sql.functions import col, trim, when
+
+
 def start_class_query(spark, msgs, model_path, checkpoint_dir):
-    raise NotImplementedError("Part 2 owner: implement start_class_query (see docstring).")
+    """Start cumulative per-topic predictions for incoming Kafka messages."""
+    # Load the same complete fitted preprocessing + classification pipeline.
+    model = PipelineModel.load(model_path)
+
+    # Part 1 already removes null texts; also filter out whitespace-only posts.
+    clean_msgs = msgs.filter(
+        col("text").isNotNull() & (trim(col("text")) != "")
+    )
+
+    # Transform is inference: it uses learned weights without training again.
+    predictions = model.transform(clean_msgs)
+
+    # The model predicts label IDs 0.0–3.0; make them readable.
+    labeled = predictions.withColumn(
+        "label_name",
+        when(col("prediction") == 0, "World")
+        .when(col("prediction") == 1, "Sports")
+        .when(col("prediction") == 2, "Business")
+        .when(col("prediction") == 3, "Sci/Tech")
+        .otherwise("Unknown"),
+    )
+
+    # A stateful aggregation: counts keep accumulating across micro-batches.
+    counts = labeled.groupBy("label_name").count()
+
+    # Complete mode prints current totals for all classes on every trigger.
+    # Use a checkpoint distinct from the Part 1 entity-count query.
+    query = (
+        counts.writeStream
+        .queryName("live_topic_counts")
+        .outputMode("complete")
+        .format("console")
+        .option("checkpointLocation", checkpoint_dir)
+        .option("truncate", "false")
+        .trigger(processingTime="30 seconds")
+        .start()
+    )
+
+    # Let stream_app.py manage the lifetime of both streaming queries.
+    return query
