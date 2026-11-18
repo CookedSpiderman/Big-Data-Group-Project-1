@@ -77,6 +77,17 @@ The Kafka connector JAR matching your PySpark version is downloaded automaticall
 
 Each `topic2` message is `{"entity": "...", "count": N}`, where `count` is the entity's **running total**, not an increment.
 
+**Running both streaming queries together (Part 1 entities + Part 2 live classification).** Run from the repository root so `part2` is importable:
+
+```bash
+PYTHONPATH=$PWD python part1/stream_app.py --bootstrap-servers localhost:9092 \
+    --input-topic topic1 --output-topic topic2 \
+    --checkpoint-dir <path>/checkpoints/demo --starting-offsets latest --console-top \
+    --model-path part2/models/ag_news_classifier
+```
+
+The console then shows the top-10 entity table and the per-class `label_name` / `count` table at each trigger.
+
 ### 4. Kibana chart
 
 Open http://localhost:5601.
@@ -126,10 +137,16 @@ Our original saved Bluesky JSONL file contained **4,050** posts. Spark removed *
 
 The code uses `maxIter=20` and `regParam=0.1`. The entire fitted `PipelineModel` is saved, which ensures new posts pass through the **same tokenizer, stop-word handling, hash mapping, IDF weights and trained classifier**.
 
+The Part 2 batch scripts run inside a Spark 3.5.8 Docker image. Build it once from the repository root:
+
+```powershell
+docker build -f part2/Dockerfile.spark -t cs4371-spark-full:3.5.8 .
+```
+
 To **retrain** and save a model in the repository layout:
 
 ```powershell
-docker run --rm -v "${PWD}:/workspace" -w /workspace cs4371-spark-full:3.5.8 /opt/spark/bin/spark-submit --master "local[2]" --driver-memory 3g part2/src/train_classifier.py --input data/ag_news_train.parquet --model-output part2/ag_news_classifier
+docker run --rm -v "${PWD}:/workspace" -w /workspace cs4371-spark-full:3.5.8 /opt/spark/bin/spark-submit --master "local[2]" --driver-memory 3g part2/src/train_classifier.py --input data/ag_news_train.parquet --model-output part2/models/ag_news_classifier
 ```
 
 > **Caution:** This script saves with overwrite mode. If the checked-in model is already present and works, training again is optional and will replace the model directory at the output path.
@@ -143,7 +160,7 @@ If your producer backup is saved at `data/bluesky_live.jsonl`, run:
 docker run --rm -v "${PWD}:/workspace" -w /workspace cs4371-spark-full:3.5.8 /opt/spark/bin/spark-submit --master "local[2]" part2/src/prepare_streamed_messages.py --input data/bluesky_live.jsonl --output data/cleaned_posts
 
 # Apply the saved PipelineModel and save predictions
-docker run --rm -v "${PWD}:/workspace" -w /workspace cs4371-spark-full:3.5.8 /opt/spark/bin/spark-submit --master "local[2]" --driver-memory 3g part2/src/classify_posts.py --input data/cleaned_posts --model part2/ag_news_classifier --output part2/outputs/batch_predictions
+docker run --rm -v "${PWD}:/workspace" -w /workspace cs4371-spark-full:3.5.8 /opt/spark/bin/spark-submit --master "local[2]" --driver-memory 3g part2/src/classify_posts.py --input data/cleaned_posts --model part2/models/ag_news_classifier --output part2/outputs/batch_predictions
 ```
 
 For the original **4,021-message** batch, the observed predicted counts were:
@@ -195,7 +212,7 @@ def start_class_query(spark, msgs, model_path, checkpoint_dir):
 
 `part1/stream_app.py` imports this function when invoked with `--model-path`. It receives the **already-parsed streaming DataFrame from `topic1`**, loads the saved PipelineModel, predicts one of four classes for each new message, and displays **cumulative counts by class** with `writeStream` in `complete` output mode. The class stream uses its **own checkpoint**, separate from the entity stream. It runs alongside Part 1, not as a replacement for Part 1.
 
-Use the **Terminal 1** Spark command in the Docker quick start above to run both queries. The class-count console displays fields `label_name` and `count`. Our local four-message integration test showed one message classified in each of the four classes; a later real-data test showed growing counts while the producer was running. These checks demonstrate operation; the full live run is the source for final demonstration screenshots.
+Use the "Running both streaming queries together" command in Part 1, step 3 to run both queries. The class-count console displays fields `label_name` and `count`. Our local four-message integration test showed one message classified in each of the four classes; a later real-data test showed growing counts while the producer was running. These checks demonstrate operation; the full live run is the source for final demonstration screenshots.
 
 ## Output files and final submission
 
@@ -211,18 +228,19 @@ Expected deliverables include:
 - Project report PDF describing the source, methods, results and limitations; include the team contribution table, an accessible link to a narrated **8-minute-maximum** video where each member explains their work, and the required AI-use appendix.
 - If AI assistants were used, complete conversation transcripts as PDFs in an `ai_transcripts/` folder.
 
-Package the required contents into one ZIP named `<TeamNumber>-GP1.zip` for the final submission. **Do not put API keys, tokens or secrets in the repository or ZIP.** Fill in the team placeholders at the top of this README before submitting.
+Package the required contents into one ZIP named `55-GP1.zip` for the final submission. **Do not put API keys, tokens or secrets in the repository or ZIP.**
 
 ## Stopping, restarting and troubleshooting
 
 - To stop the **producer** and **Spark** streams, use `Ctrl+C` in their respective terminals. Close neither window during active recording or collection.
 - Run `docker compose stop` to stop the infrastructure **without removing containers**. Restart with `docker compose up -d`.
 - `docker compose down` removes containers and the Compose network. Without persistent Kafka storage, it can also remove stored Kafka topics/messages; use `stop` when you want to preserve your local test state.
-- If Spark says `Failed to find data source: kafka`, use `spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8` as shown in the tested command.
-- If Spark cannot find the model, verify the entire `part2/ag_news_classifier/metadata` directory exists and that the provided path is relative to `/workspace` (the mounted repository).
-- If Kafka works from Windows but not from Spark's Docker container, check the container is on the Compose network and uses `kafka:29092`, **not** `localhost:9092`.
-- If Kibana displays old test results, check the saved Elasticsearch documents, that Logstash is running, and the Lens configuration (**Top values of `entity.keyword`**, **Maximum of `count`**). New Spark checkpoints alone do **not** erase old Elasticsearch documents.
-- A failed command inside Docker does not delete the Python scripts, data or saved model in the mounted repository. Keep `data/`, `part2/outputs/`, and `part2/ag_news_classifier/` backed up.
+- If Spark says `Failed to find data source: kafka`, the Kafka connector did not download. `stream_app.py` requests `spark-sql-kafka-0-10_2.12` matching your installed PySpark version, so check your network connection and rerun.
+- If the live classification query fails with `ModuleNotFoundError: No module named 'part2'`, run `stream_app.py` from the repository root with `PYTHONPATH=$PWD` as shown in Part 1, step 3.
+- If Spark cannot find the model, verify the entire `part2/models/ag_news_classifier/metadata` directory exists and that the path is relative to where you run the command (or inside `/workspace` for the Docker commands).
+- Programs on the host reach Kafka at `localhost:9092`; containers on the Compose network (Logstash) use `kafka:29092`.
+- If Kibana displays old test results, run the "Starting a fresh run" commands above, check that Logstash is running, and check the Lens configuration (**Top values of `entity`**, **Maximum of `count`**). New Spark checkpoints alone do **not** erase old Elasticsearch documents.
+- A failed command inside Docker does not delete the Python scripts, data or saved model in the mounted repository. Keep `data/`, `part2/outputs/`, and `part2/models/ag_news_classifier/` backed up.
 
 ## References
 
