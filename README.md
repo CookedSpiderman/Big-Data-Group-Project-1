@@ -1,6 +1,6 @@
 # CS4371 Group Project 1 — Streaming NER + Text Classification
 
-Team 55 — Dev Nair (DXN210046), <Name 2 (NetID)>
+Team 55 — Dev Nair (DXN210046), Denilson Montalvo (DAM170000)
 
 - **Part 1:** Bluesky posts → Kafka `topic1` → Spark Structured Streaming (spaCy named entities, running counts) → Kafka `topic2` → Logstash → Elasticsearch → Kibana top-10 bar chart.
 - **Part 2:** Spark MLlib pipeline trained on AG News, applied to the streamed posts in batch and live.
